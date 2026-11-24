@@ -1,0 +1,86 @@
+#!/bin/bash
+# gov-report — Generate CSV or JSON reports from governance logs
+# Usage: gov-report [session_id] [--format csv|json]
+
+GOV_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+GOV_CLAUDE_LOG_DIR="${GOV_CLAUDE_LOG_DIR:-$GOV_ROOT/logs}"
+OUTPUT_DIR="$GOV_ROOT/reports"
+
+FORMAT="csv"
+SESSION_FILTER=""
+
+# Parse args
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --format) FORMAT="$2"; shift 2 ;;
+    --json)   FORMAT="json"; shift ;;
+    --csv)    FORMAT="csv"; shift ;;
+    *)        SESSION_FILTER="$1"; shift ;;
+  esac
+done
+
+mkdir -p "$OUTPUT_DIR"
+
+# Collect input files
+if [ -n "$SESSION_FILTER" ]; then
+  FILES=("$GOV_CLAUDE_LOG_DIR/session_${SESSION_FILTER}.jsonl")
+  if [ ! -f "${FILES[0]}" ]; then
+    echo "[gov-report] Session not found: $SESSION_FILTER"
+    exit 1
+  fi
+else
+  FILES=("$GOV_CLAUDE_LOG_DIR"/*.jsonl)
+  if [ ${#FILES[@]} -eq 0 ] || [ ! -f "${FILES[0]}" ]; then
+    echo "[gov-report] No session logs found."
+    exit 1
+  fi
+fi
+
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+
+# Lines are parsed one at a time (-R + fromjson?), so a malformed line is
+# skipped instead of aborting the rest of its file.
+LINES=$(cat "${FILES[@]}" | grep -c .)
+VALID=$(jq -nR '[inputs | fromjson? | select(type == "object")] | length' "${FILES[@]}")
+SKIPPED=$(( LINES - VALID ))
+
+if [ "$FORMAT" = "csv" ]; then
+  OUTFILE="$OUTPUT_DIR/report_${TIMESTAMP}.csv"
+  echo "timestamp,session_id,event,tool_name,input_summary,cwd,permission_mode" > "$OUTFILE"
+
+  for f in "${FILES[@]}"; do
+    jq -R -r '
+      fromjson? | select(type == "object") |
+      [
+        .logged_at,
+        .session_id,
+        .hook_event_name,
+        (.tool_name // "-"),
+        (
+          (.tool_input.command // .tool_input.file_path // .tool_input.pattern // .tool_input.query // .prompt // "-")
+          | gsub(","; ";")
+          | gsub("\n"; " ")
+          | if length > 200 then .[0:200] + "..." else . end
+        ),
+        (.cwd // "-"),
+        (.permission_mode // "-")
+      ] | @csv
+    ' "$f" >> "$OUTFILE"
+  done
+
+  TOTAL=$(( $(wc -l < "$OUTFILE") - 1 ))
+  echo "[gov-report] CSV report generated: $OUTFILE ($TOTAL events)"
+
+elif [ "$FORMAT" = "json" ]; then
+  OUTFILE="$OUTPUT_DIR/report_${TIMESTAMP}.json"
+
+  # Merge all JSONL into a single JSON array
+  jq -nR '[inputs | fromjson? | select(type == "object")]' "${FILES[@]}" > "$OUTFILE"
+
+  TOTAL=$(jq 'length' "$OUTFILE")
+  echo "[gov-report] JSON report generated: $OUTFILE ($TOTAL events)"
+fi
+
+if [ "$SKIPPED" -gt 0 ]; then
+  echo "[gov-report] Skipped $SKIPPED malformed log line(s)."
+fi

@@ -1,0 +1,10 @@
+[project]
+name = "claude-code-gov"
+version = "0.1.0"
+description = "Analysis and charts for gov, a local tracer for Claude Code sessions"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "seaborn>=0.13",
+]

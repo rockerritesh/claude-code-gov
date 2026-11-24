@@ -1,0 +1,89 @@
+#!/bin/bash
+# gov — Governance wrapper for Claude Code
+# Usage: gov claude [args...]
+#        gov report [session_id]  — generate CSV report
+#        gov logs                 — list all session logs
+#        gov tail [session_id]    — live tail a session log
+#
+# When launched as "gov claude", all Claude Code tool calls, prompts,
+# and session events are traced to JSONL files in the logs/ directory.
+
+# Resolve symlinks to find the real project root
+REAL_SCRIPT="$(readlink -f "$0" 2>/dev/null || python3 -c "import os; print(os.path.realpath('$0'))")"
+GOV_ROOT="$(cd "$(dirname "$REAL_SCRIPT")/.." && pwd)"
+export GOV_CLAUDE_LOG_DIR="$GOV_ROOT/logs"
+
+usage() {
+  echo "gov — Claude Code Governance Tracker"
+  echo ""
+  echo "Usage:"
+  echo "  gov claude [args...]       Launch Claude Code with full tracing"
+  echo "  gov report [session_id]    Generate CSV report (all sessions or one)"
+  echo "  gov logs                   List all session logs"
+  echo "  gov tail [session_id]      Live-tail the latest (or given) session log"
+  echo "  gov help                   Show this help"
+  echo ""
+  echo "Logs are stored in: $GOV_CLAUDE_LOG_DIR/"
+}
+
+cmd_claude() {
+  mkdir -p "$GOV_CLAUDE_LOG_DIR"
+  echo "[gov] Tracing enabled. Logs → $GOV_CLAUDE_LOG_DIR/"
+  exec claude "$@"
+}
+
+cmd_logs() {
+  if [ ! -d "$GOV_CLAUDE_LOG_DIR" ] || [ -z "$(ls -A "$GOV_CLAUDE_LOG_DIR"/*.jsonl 2>/dev/null)" ]; then
+    echo "[gov] No session logs found."
+    exit 0
+  fi
+  echo "Session Logs:"
+  echo "─────────────"
+  for f in "$GOV_CLAUDE_LOG_DIR"/*.jsonl; do
+    basename "$f" .jsonl | sed 's/^session_//'
+    EVENTS=$(wc -l < "$f" | tr -d ' ')
+    FIRST=$(head -1 "$f" | jq -r '.logged_at // "?"')
+    LAST=$(tail -1 "$f" | jq -r '.logged_at // "?"')
+    echo "  Events: $EVENTS | From: $FIRST | To: $LAST"
+  done
+}
+
+cmd_tail() {
+  local session_id="$1"
+  if [ -n "$session_id" ]; then
+    local logfile="$GOV_CLAUDE_LOG_DIR/session_${session_id}.jsonl"
+  else
+    # Get the most recent log file
+    local logfile
+    logfile=$(ls -t "$GOV_CLAUDE_LOG_DIR"/*.jsonl 2>/dev/null | head -1)
+  fi
+
+  if [ -z "$logfile" ] || [ ! -f "$logfile" ]; then
+    echo "[gov] No log file found."
+    exit 1
+  fi
+
+  echo "[gov] Tailing: $logfile"
+  echo "─────────────"
+  tail -f "$logfile" | jq -r '
+    "\(.logged_at) | \(.hook_event_name) | \(.tool_name // "-") | \(.tool_input.command // .tool_input.file_path // .tool_input.pattern // .tool_input.query // .prompt // "-")"
+  '
+}
+
+cmd_report() {
+  "$GOV_ROOT/bin/gov-report" "$@"
+}
+
+# ── Main dispatch ──
+case "${1:-help}" in
+  claude)   shift; cmd_claude "$@" ;;
+  report)   shift; cmd_report "$@" ;;
+  logs)     shift; cmd_logs "$@" ;;
+  tail)     shift; cmd_tail "$@" ;;
+  help|-h|--help) usage ;;
+  *)
+    echo "[gov] Unknown command: $1"
+    usage
+    exit 1
+    ;;
+esac

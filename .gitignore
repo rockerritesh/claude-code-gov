@@ -1,0 +1,15 @@
+# Session data: full prompts, commands and file contents. Never commit.
+logs/
+reports/
+figures/
+.analysis_tracker.json
+
+# Logger scratch files
+.gov.lock
+.entry.*
+
+.venv/
+__pycache__/
+.claude/
+.DS_Store
+Conversation.md
